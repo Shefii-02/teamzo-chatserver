@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+*.tsbuildinfo
+*.log
+.DS_Store
+# secrets — only the .env.example template is committed
+.env
+.env.*
+!.env.example
