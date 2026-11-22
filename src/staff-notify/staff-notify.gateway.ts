@@ -51,7 +51,18 @@ export class StaffNotifyGateway implements OnGatewayConnection, OnGatewayDisconn
 
   /** Live sockets of one staff member across ALL devices — presence is "online" while at least one remains. */
   private deviceCount(staffId: number): number {
-    return this.server.of('/staff').adapter.rooms.get(`staff:${staffId}`)?.size ?? 0;
+    return this.roomSize(`staff:${staffId}`);
+  }
+
+  /**
+   * Sockets in a room of the /staff namespace. With `namespace: '/staff'` Nest injects the Namespace itself as `this.server` (it has
+   * no `.of()` — calling it threw "this.server.of is not a function" on every disconnect, and the uncaught error killed the process, so
+   * pm2 kept restarting it and every request in between got a 502/503). Works whether Nest hands us a Namespace or the root Server.
+   */
+  private roomSize(room: string): number {
+    const s = this.server as unknown as { of?: (n: string) => { adapter: { rooms: Map<string, Set<string>> } }; adapter: { rooms: Map<string, Set<string>> } };
+    const nsp = typeof s.of === 'function' ? s.of('/staff') : s;
+    return nsp.adapter.rooms.get(room)?.size ?? 0;
   }
 
   /** Sliding-window flood guard per socket. Returns false when the socket is over its budget. */
@@ -276,7 +287,7 @@ export class StaffNotifyGateway implements OnGatewayConnection, OnGatewayDisconn
   emitToStaff(staffId: number, event: string, data: unknown): boolean {
     // Room-based so every connected device gets it (the old single-socket map only reached the last one).
     const room = `staff:${staffId}`;
-    const online = (this.server.of('/staff').adapter.rooms.get(room)?.size ?? 0) > 0;
+    const online = this.roomSize(room) > 0;
     this.server.to(room).emit(event, data);
     return online;
   }
