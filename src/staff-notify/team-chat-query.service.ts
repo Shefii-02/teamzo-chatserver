@@ -72,7 +72,8 @@ export class TeamChatQueryService {
   async chats(u: TeamUser, q: Record<string, string>) {
     const perPage = int(q.per_page, 30, 5, 100);
     const page = int(q.page, 1, 1, 100000);
-    const where: string[] = ['m.user_id = ?', 'm.left_at IS NULL', 'c.company_id = ?'];
+    // "Delete for me": a hidden chat stays out of my list until a message newer than my clear point arrives
+    const where: string[] = ['m.user_id = ?', 'm.left_at IS NULL', 'c.company_id = ?', '(m.hidden = 0 OR c.last_message_id > m.cleared_before_id)'];
     const params: (string | number)[] = [u.id, u.companyId];
     if (q.type === 'direct' || q.type === 'group') { where.push('c.type = ?'); params.push(q.type); }
     const term = (q.q ?? '').trim();
@@ -89,7 +90,7 @@ export class TeamChatQueryService {
     }
 
     const fetched = await this.db.query<Row>(
-      `SELECT c.*, ${DT('c.last_message_at', 'last_message_at_s')}, m.last_read_message_id, m.muted, m.muted_until, m.role AS my_role
+      `SELECT c.*, ${DT('c.last_message_at', 'last_message_at_s')}, m.last_read_message_id, m.cleared_before_id, m.muted, m.muted_until, m.role AS my_role
          FROM team_chat_members m JOIN team_chats c ON c.id = m.chat_id
         WHERE ${where.join(' AND ')}
         ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
@@ -152,7 +153,8 @@ export class TeamChatQueryService {
     const data = rows.map((c) => {
       const id = Number(c.id);
       const o = others.get(id);
-      const l = c.last_message_id ? last.get(Number(c.last_message_id)) : undefined;
+      // after "Clear chat" there is no old preview
+      const l = c.last_message_id && Number(c.last_message_id) > Number(c.cleared_before_id ?? 0) ? last.get(Number(c.last_message_id)) : undefined;
       const direct = c.type === 'direct';
       return {
         id, type: c.type,
@@ -162,7 +164,7 @@ export class TeamChatQueryService {
         members_count: counts.get(id) ?? 0, muted: this.mutedNow(c), muted_until: c.muted ? c.muted_until : null, my_role: c.my_role,
         unread: unread.get(id) ?? 0, unread_mentions: mentionUnread.get(id) ?? 0,
         last_sender: l?.sender_id ? (lastSender.get(Number(l.sender_id)) ?? null) : null, last_sender_id: l?.sender_id ?? null,
-        last_message: l ? this.preview(l) : null, last_message_at: toIso(c.last_message_at_s),
+        last_message: l ? this.preview(l) : null, last_message_at: l ? toIso(c.last_message_at_s) : null,
       };
     });
     return {
@@ -195,10 +197,11 @@ export class TeamChatQueryService {
   // ── messages ──────────────────────────────────────────────────────────────
 
   async messages(u: TeamUser, chatId: number, q: Record<string, string>) {
-    await this.member(chatId, u);
+    const me = await this.member(chatId, u);
     const limit = int(q.limit, 40, 1, 100);
+    // nothing at or before the point where I last cleared this chat, and nothing I deleted for myself
     const sel = `SELECT m.*, ${DT('m.created_at', 'created_at_s')} FROM team_chat_messages m
-                  WHERE m.chat_id = ? AND NOT EXISTS (SELECT 1 FROM team_chat_hides h WHERE h.message_id = m.id AND h.user_id = ?)`;
+                  WHERE m.chat_id = ? AND m.id > ${Number(me.cleared_before_id ?? 0)} AND NOT EXISTS (SELECT 1 FROM team_chat_hides h WHERE h.message_id = m.id AND h.user_id = ?)`;
     const base: (string | number)[] = [chatId, u.id];
     let rows: Row[];
     if (q.q) {
@@ -291,6 +294,7 @@ export class TeamChatQueryService {
       const ex = await this.db.query<Row>('SELECT id FROM team_chats WHERE company_id = ? AND direct_key = ? LIMIT 1', [u.companyId, key]);
       if (ex.length) {
         await this.db.execute('UPDATE team_chat_members SET left_at = NULL WHERE chat_id = ?', [ex[0].id]);
+        await this.db.execute('UPDATE team_chat_members SET hidden = 0 WHERE chat_id = ? AND user_id = ?', [ex[0].id, u.id]);   // starting it again brings back a chat I deleted for myself
         return { id: Number(ex[0].id) };
       }
       const res = await this.db.run(

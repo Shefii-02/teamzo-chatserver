@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Body, Controller, Get, Param, ParseIntPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { TeamChatAuthGuard } from './team-chat-auth.guard';
 import type { TeamChatRequest } from './team-chat-auth.guard';
 import { TeamChatQueryService } from './team-chat-query.service';
@@ -26,6 +26,7 @@ export class TeamChatController {
 
   @Post('chats')
   create(@Req() r: TeamChatRequest, @Body() body: { type?: string; user_id?: number; name?: string; member_ids?: number[] }) {
+    if (body?.type === 'group' && !r.teamRights.groups) throw new ForbiddenException('You do not have permission to create groups.');
     return this.q.create(r.teamUser, body);
   }
 

@@ -2,14 +2,15 @@ import { CanActivate, ExecutionContext, ForbiddenException, Injectable, ServiceU
 import type { Request } from 'express';
 import { MysqlService } from '../core/mysql.service';
 import { StaffAuthService } from '../core/staff-auth.service';
+import { TeamChatAccessService } from './team-chat-access.service';
+import type { TeamChatRights } from './team-chat-access.service';
 import type { TeamUser } from './team-chat-query.service';
 
-export type TeamChatRequest = Request & { teamUser: TeamUser };
+export type TeamChatRequest = Request & { teamUser: TeamUser; teamRights: TeamChatRights };
 
 /**
- * Same Laravel JWT the apps already hold, verified locally with the shared JWT_SECRET (like the /staff socket). Team chat
- * needs no extra permission — any active staff member of a company can use it — so identity + company come straight from
- * the users table (cached 30 s).
+ * Same Laravel JWT the apps already hold, verified locally with the shared JWT_SECRET (like the /staff socket). Identity + company come from
+ * the users table (cached 30 s); whether the plan includes Team chat and the role may use it is asked of Laravel (TeamChatAccessService).
  */
 @Injectable()
 export class TeamChatAuthGuard implements CanActivate {
@@ -18,6 +19,7 @@ export class TeamChatAuthGuard implements CanActivate {
   constructor(
     private readonly auth: StaffAuthService,
     private readonly db: MysqlService,
+    private readonly access: TeamChatAccessService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -32,6 +34,7 @@ export class TeamChatAuthGuard implements CanActivate {
     if (hit && Date.now() - hit.at < 30_000) {
       if (!hit.user) throw new ForbiddenException('Account is not active');
       req.teamUser = hit.user;
+      req.teamRights = await this.access.assertUseHttp(hit.user.id);
       return true;
     }
     const rows = await this.db.query<{ id: number; company_id: number | null; name: string; is_active: number }>(
@@ -41,6 +44,7 @@ export class TeamChatAuthGuard implements CanActivate {
     this.cache.set(userId, { at: Date.now(), user });
     if (!user) throw new ForbiddenException('Account is not active');
     req.teamUser = user;
+    req.teamRights = await this.access.assertUseHttp(user.id);   // the plan includes Team chat and the role may use it
     return true;
   }
 }

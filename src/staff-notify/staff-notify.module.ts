@@ -5,10 +5,11 @@ import { InternalController } from './internal.controller';
 import { TeamChatService } from './team-chat.service';
 import { TeamChatQueryService } from './team-chat-query.service';
 import { TeamChatAuthGuard } from './team-chat-auth.guard';
+import { TeamChatAccessService } from './team-chat-access.service';
 import { TeamChatController } from './team-chat.controller';
 
 @Module({
-  providers: [StaffNotifyGateway, WidgetVisitorGateway, TeamChatService, TeamChatQueryService, TeamChatAuthGuard],
+  providers: [StaffNotifyGateway, WidgetVisitorGateway, TeamChatService, TeamChatQueryService, TeamChatAuthGuard, TeamChatAccessService],
   controllers: [InternalController, TeamChatController],
   exports: [StaffNotifyGateway, WidgetVisitorGateway],
 })

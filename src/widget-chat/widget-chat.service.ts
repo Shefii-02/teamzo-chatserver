@@ -13,9 +13,15 @@ interface MessageRow {
   reply_to_id: number | null; created_at: string | null;
 }
 
-const CLOSED = `(wc.status = 'closed' OR wc.live_status = 'ended')`;
-const UNREAD = `EXISTS (SELECT 1 FROM widget_messages m WHERE m.widget_conversation_id = wc.id AND m.role = 'visitor'
-                  AND (wc.staff_read_at IS NULL OR m.created_at > wc.staff_read_at))`;
+/** live_status is NULL for every chat that never asked for live help — comparing NULL gives "unknown", which made NOT CLOSED unknown too and dropped those chats from the Unread and Read tabs (and their counts). */
+const CLOSED = `(wc.status = 'closed' OR COALESCE(wc.live_status, '') = 'ended')`;
+/** A visitor who left their name + number, asked for a callback or became a lead is someone staff must see — even if they never typed a message. */
+const HAS_DETAILS = `((wc.visitor_phone IS NOT NULL AND wc.visitor_phone <> '') OR wc.lead_id IS NOT NULL OR wc.contact_id IS NOT NULL)`;
+/** What the inbox lists: any conversation with a message, or with details / a lead, or one waiting for / in a live chat. (It used to need a message, which hid every visitor who only left their details.) */
+const LISTED = `(EXISTS (SELECT 1 FROM widget_messages x WHERE x.widget_conversation_id = wc.id) OR ${HAS_DETAILS} OR wc.live_status IN ('waiting', 'live'))`;
+const UNREAD = `(EXISTS (SELECT 1 FROM widget_messages m WHERE m.widget_conversation_id = wc.id AND m.role = 'visitor'
+                  AND (wc.staff_read_at IS NULL OR m.created_at > wc.staff_read_at))
+              OR (wc.staff_read_at IS NULL AND (${HAS_DETAILS} OR wc.live_status = 'waiting')))`;   // someone waiting for a live agent is the most urgent chat of all
 const MESSAGE_COLS = `id, role, type, text, attachment_path, attachment_name, attachment_mime, attachment_size, reply_to_id, ${dt('created_at')}`;
 
 const int = (v: unknown, def: number, min: number, max: number): number => {
@@ -100,7 +106,7 @@ export class WidgetChatService {
     const tab: InboxTab = q.tab === 'read' || q.tab === 'closed' || q.tab === 'all' ? q.tab : 'unread';
     const page = int(q.page, 1, 1, 100000);
     const perPage = int(q.per_page, 30, 1, 100);
-    const where: string[] = ['wc.company_id = ?', 'EXISTS (SELECT 1 FROM widget_messages x WHERE x.widget_conversation_id = wc.id)'];
+    const where: string[] = ['wc.company_id = ?', LISTED];
     const params: (string | number)[] = [staff.companyId];
 
     const widgetId = int(q.widget_id, 0, 0, Number.MAX_SAFE_INTEGER);
@@ -125,8 +131,9 @@ export class WidgetChatService {
         `SELECT wc.id, wc.chat_widget_id, cw.name AS widget_name, wc.visitor_name, wc.visitor_phone, wc.status, wc.case_status,
                 wc.live_status, wc.ai_active, wc.staff_name, wc.assigned_user_id, wc.page_url, ${UNREAD} AS is_unread,
                 ${dt('wc.last_message_at')}, ${dt('wc.live_requested_at')}, ${dt('wc.callback_confirmed_at')},
-                (SELECT CASE WHEN m.text <> '' THEN m.text WHEN m.type = 'image' THEN '📷 Photo' WHEN m.type = 'audio' THEN '🎤 Voice message' ELSE '📎 File' END
-                   FROM widget_messages m WHERE m.widget_conversation_id = wc.id ORDER BY m.id DESC LIMIT 1) AS last_text
+                COALESCE((SELECT CASE WHEN m.text <> '' THEN m.text WHEN m.type = 'image' THEN '📷 Photo' WHEN m.type = 'audio' THEN '🎤 Voice message' ELSE '📎 File' END
+                   FROM widget_messages m WHERE m.widget_conversation_id = wc.id ORDER BY m.id DESC LIMIT 1),
+                   CASE WHEN wc.lead_id IS NOT NULL THEN '🎯 Lead captured — no chat messages' ELSE '📞 Left contact details — no chat messages' END) AS last_text
            FROM widget_conversations wc JOIN chat_widgets cw ON cw.id = wc.chat_widget_id
           WHERE ${base} AND ${tabCond}
           ORDER BY wc.last_message_at DESC, wc.id DESC LIMIT ${perPage + 1} OFFSET ${offset}`,

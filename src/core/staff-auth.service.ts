@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
 
 export interface StaffIdentity {
@@ -14,6 +14,7 @@ export interface StaffIdentity {
  */
 @Injectable()
 export class StaffAuthService {
+  private readonly log = new Logger(StaffAuthService.name);
   private readonly cache = new Map<string, { at: number; value: StaffIdentity | null }>();
   private static readonly TTL_MS = 60_000;
 
@@ -49,12 +50,21 @@ export class StaffAuthService {
         body: JSON.stringify({ user_id: userId, permission }),
         signal: AbortSignal.timeout(3000),
       });
-    } catch {
+    } catch (e) {
       // Laravel unreachable: serve a recent (even stale) grant rather than locking every agent out mid-chat.
+      this.log.error(`staff-can: cannot reach Laravel at ${base} (${(e as Error)?.message ?? e}) — check LARAVEL_INTERNAL_URL`);
       if (hit?.value) return hit.value;
-      throw new UnauthorizedException('Could not verify access');
+      throw new ServiceUnavailableException('Access check is unavailable (server could not reach the API)');
     }
-    if (!res.ok) throw new UnauthorizedException('Could not verify access');
+    if (!res.ok) {
+      // The caller's JWT already verified, so this is a server-to-server problem — not the agent's login. Say so (503), and log why.
+      const hint = res.status === 401 ? 'INTERNAL_API_KEY is unset on Laravel or does not match this server\'s INTERNAL_API_KEY'
+        : res.status === 404 ? 'route not found — check LARAVEL_INTERNAL_URL points at the Laravel app (…/api/v1/internal/staff-can)'
+        : res.status >= 500 ? 'Laravel errored' : 'unexpected response';
+      this.log.error(`staff-can: Laravel answered HTTP ${res.status} at ${base} — ${hint}`);
+      if (hit?.value) return hit.value;
+      throw new ServiceUnavailableException('Access check failed (server configuration) — please contact support');
+    }
     const body = (await res.json()) as { can: boolean; company_id: number | null; name: string | null };
     const value = body.can && body.company_id ? { id: userId, companyId: body.company_id, name: body.name ?? 'Staff' } : null;
     this.cache.set(key, { at: Date.now(), value });

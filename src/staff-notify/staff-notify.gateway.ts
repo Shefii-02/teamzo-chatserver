@@ -1,3 +1,4 @@
+import { TeamChatAccessService } from './team-chat-access.service';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -66,6 +67,7 @@ export class StaffNotifyGateway implements OnGatewayConnection, OnGatewayDisconn
   constructor(
     private readonly db: MysqlService,
     private readonly teamChat: TeamChatService,
+    private readonly chatAccess: TeamChatAccessService,
   ) {
     // Team chat fans out through this gateway's per-staff rooms (every device of a member gets it).
     this.teamChat.setEmitter((staffId, event, data) => this.emitToStaff(staffId, event, data));
@@ -177,6 +179,7 @@ export class StaffNotifyGateway implements OnGatewayConnection, OnGatewayDisconn
     const staffId = (client.data as Partial<AuthenticatedSocketData>).staffId;
     const chatId = Number(body?.chat_id);
     if (!staffId || !Number.isInteger(chatId) || chatId <= 0 || !this.allow(client, 'typing')) return;
+    if (!(await this.chatAccess.rights(staffId)).use) return;   // plan / permission does not cover team chat
     const key = `${chatId}:${staffId}`;
     let hit = this.memberCache.get(key);
     if (!hit || Date.now() - hit.at > StaffNotifyGateway.MEMBER_TTL_MS) {

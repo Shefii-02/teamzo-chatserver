@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MysqlService } from '../core/mysql.service';
+import { TeamChatAccessService } from './team-chat-access.service';
 import { nowLocal, toIso } from '../core/time.util';
 
 /** Quoted "now" in the Laravel app timezone — Laravel and Node must write the same wall-clock into shared DATETIME columns. */
@@ -44,7 +45,7 @@ export class TeamChatService {
   private readonly logger = new Logger(TeamChatService.name);
   private emitter: StaffEmitter = () => undefined;
 
-  constructor(private readonly db: MysqlService) {}
+  constructor(private readonly db: MysqlService, private readonly access: TeamChatAccessService) {}
 
   setEmitter(fn: StaffEmitter): void {
     this.emitter = fn;
@@ -244,6 +245,7 @@ export class TeamChatService {
 
   send(staffId: number, p: SendPayload): Promise<Ack<{ message: unknown }>> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       const chatId = Number(p?.chat_id);
       const me = await this.member(chatId, staffId);
       if (me.type === 'group' && me.only_admins_post && me.role !== 'admin') throw new Error('Only admins can post in this group.');
@@ -304,6 +306,7 @@ export class TeamChatService {
 
   edit(staffId: number, messageId: number, body: string): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       const { m } = await this.ownMessage(staffId, Number(messageId));
       if (Number(m.sender_id) !== staffId || m.deleted_at || m.type !== 'text') throw new Error('You can only edit your own text messages.');
       const text = String(body ?? '').trim().slice(0, 4000);
@@ -317,6 +320,7 @@ export class TeamChatService {
   /** scope `me` hides it from this user only; `everyone` (sender or group admin) leaves a tombstone but keeps the original on file. */
   delete(staffId: number, messageId: number, scope: 'me' | 'everyone' = 'everyone'): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       const { m, me } = await this.ownMessage(staffId, Number(messageId));
       if (scope === 'me') {
         await this.db.execute(`INSERT IGNORE INTO team_chat_hides (message_id, user_id, created_at) VALUES (?,?,${NOW()})`, [m.id, staffId]);
@@ -333,6 +337,7 @@ export class TeamChatService {
 
   react(staffId: number, messageId: number, emoji: string): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       const { m } = await this.ownMessage(staffId, Number(messageId));
       const e = String(emoji ?? '').slice(0, 16);
       if (!e) throw new Error('Pick an emoji.');
@@ -346,6 +351,7 @@ export class TeamChatService {
 
   read(staffId: number, chatId: number): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       await this.member(Number(chatId), staffId);
       const r = await this.db.query<{ last: number | null }>('SELECT MAX(id) AS last FROM team_chat_messages WHERE chat_id = ?', [chatId]);
       const last = Number(r[0]?.last ?? 0);
@@ -366,6 +372,7 @@ export class TeamChatService {
   /** This device has received everything up to now → the senders' ticks turn ✓✓. */
   delivered(staffId: number, chatId: number): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       await this.member(Number(chatId), staffId);
       const r = await this.db.query<{ last: number | null }>('SELECT MAX(id) AS last FROM team_chat_messages WHERE chat_id = ?', [chatId]);
       const last = Number(r[0]?.last ?? 0);
@@ -385,6 +392,7 @@ export class TeamChatService {
 
   forward(staffId: number, messageId: number, chatIds: number[]): Promise<Ack> {
     return this.safe(async () => {
+      await this.access.assertUse(staffId);
       const { m } = await this.ownMessage(staffId, Number(messageId));
       if (m.deleted_at || m.type === 'system') throw new Error('Cannot forward this message.');
       for (const cid of (chatIds ?? []).map(Number).slice(0, 10)) {
