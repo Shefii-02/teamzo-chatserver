@@ -73,7 +73,21 @@ export class StaffNotifyGateway implements OnGatewayConnection, OnGatewayDisconn
     this.teamChat.setEmitter((staffId, event, data) => this.emitToStaff(staffId, event, data));
   }
 
+  /**
+   * socket.io does not catch what an async connection handler throws, and on current Node an unhandled rejection kills the whole
+   * process — so one MySQL hiccup while a staff socket connected took the chat server down (nginx/Cloudflare then answered 502 to
+   * everyone until pm2 restarted it). Anything that fails here now just refuses that one socket.
+   */
   async handleConnection(client: Socket): Promise<void> {
+    try {
+      await this.authenticate(client);
+    } catch (err) {
+      this.logger.error(`Staff socket ${client.id} failed to connect: ${(err as Error).message}`);
+      client.disconnect();
+    }
+  }
+
+  private async authenticate(client: Socket): Promise<void> {
     const handshakeAuth = client.handshake.auth as { token?: string } | undefined;
     const authHeader = client.handshake.headers.authorization;
     const token =
