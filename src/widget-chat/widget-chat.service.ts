@@ -214,15 +214,17 @@ export class WidgetChatService {
     if (me.handling >= limit) throw new ConflictException(`You are already handling ${limit} chats — end one before accepting another.`);
 
     const now = nowLocal();
-    // Atomic: only one staff member can win a waiting / missed request.
+    // Atomic: only one staff member can win it. A visitor's request (waiting / missed) can be taken, and so can any other chat — one the
+    // assistant is handling, or one that was closed (it is reopened): staff can start talking to a visitor whenever they want.
     const won = await this.db.run(
       `UPDATE widget_conversations SET live_status = 'live', ai_active = 0, live_accepted_at = ?, assigned_user_id = ?, staff_name = ?,
-              case_status = 'attended', attended_by = ?, attended_at = ?, updated_at = ?
-        WHERE id = ? AND company_id = ? AND live_status IN ('waiting', 'missed')`,
+              case_status = 'attended', attended_by = ?, attended_at = ?, updated_at = ?,
+              status = CASE WHEN status = 'closed' THEN 'active' ELSE status END, closed_at = NULL
+        WHERE id = ? AND company_id = ? AND (live_status IN ('waiting', 'missed', 'ended') OR live_status IS NULL)`,
       [now, staff.id, staff.name, staff.id, now, now, id, staff.companyId],
     );
     if (!won.affectedRows) {
-      throw new ConflictException(convo.live_status === 'live' ? 'Another staff member already accepted this chat.' : 'This chat is no longer waiting.');
+      throw new ConflictException('Another staff member is already chatting with this visitor.');
     }
     const msg = await this.addMessage(id, 'system', `${staff.name} joined the chat.`);
     await this.changed(staff, id, 'accepted', (await this.format([msg]))[0], true);
